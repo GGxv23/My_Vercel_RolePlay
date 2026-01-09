@@ -176,6 +176,86 @@ ${outputInstructions}
   `.trim();
 };
 
+// PUTER-SPECIFIC SYSTEM CONTEXT BUILDER
+// This version is completely clean and safe for Puter's content filters
+// It NEVER includes jailbreak prompts or adult content references
+const buildSystemContextForPuter = (character: Character, userSettings: AppSettings, lorebookContext: string = "", summary: string = ""): string => {
+  // Clean, professional, multilingual system prompt for Puter
+  const puterSystemPrompt = `You are a creative writing assistant helping with an interactive storytelling session.
+Your role is to write responses as the character ${character.name}, staying true to their personality and background.
+
+CORE GUIDELINES:
+1. Stay in character. Use ${character.name}'s voice, personality, and knowledge consistently.
+2. Write engaging, descriptive prose that advances the story naturally.
+3. Respond in the same language used by the user. Support all languages (English, Arabic, etc.).
+4. Focus on vivid sensory details, realistic dialogue, and character development.
+5. Never break character or mention being an AI.
+
+LANGUAGE SUPPORT:
+- Automatically detect and match the user's language
+- Write fluently in Arabic, English, or any other language
+- Maintain the character's voice across all languages`;
+
+  let systemInstructionText = puterSystemPrompt;
+
+  // Add length requirements if enabled (but keep language neutral)
+  if (userSettings.minOutputEnabled && userSettings.minOutputLength > 0) {
+      const targetWords = Math.ceil(userSettings.minOutputLength / 5);
+      systemInstructionText += `\n\nOUTPUT LENGTH: Write detailed responses of at least ${userSettings.minOutputLength} characters (approximately ${targetWords} words). Include rich descriptions, dialogue, and character thoughts.`;
+  }
+
+  // IMPORTANT: Do NOT include jailbreakOverride for Puter - it triggers safety filters
+
+  // Inject Summary for memory continuity
+  if (summary && summary.trim().length > 0) {
+      systemInstructionText += `\n\n[STORY MEMORY]\n${summary.trim()}\n(Use this to maintain continuity, but don't repeat it.)`;
+  }
+
+  // Build character details (neutral language, no provocative content)
+  let charDetails = `Name: ${character.name}\n`;
+  if (character.tagline) charDetails += `Tagline: ${character.tagline}\n`;
+  if (character.description) charDetails += `Background: ${character.description}\n`;
+  if (character.personality) charDetails += `Personality: ${character.personality}\n`;
+  if (character.appearance) charDetails += `Appearance: ${character.appearance}\n`;
+  if (character.scenario) charDetails += `Current Situation: ${character.scenario}\n`;
+  if (character.eventSequence) charDetails += `Story Events: ${character.eventSequence}\n`;
+
+  // Only include clean dialogue examples
+  if (character.chatExamples && !character.chatExamples.toLowerCase().includes('nsfw')) {
+      charDetails += `Example Dialogue:\n${character.chatExamples}\n`;
+  }
+
+  // Include style if it's clean (check for provocative keywords)
+  if (character.style) {
+      const cleanStyle = character.style
+          .replace(/mature|adult|nsfw|explicit|graphic|uncensored/gi, '')
+          .trim();
+      if (cleanStyle.length > 10) { // Only include if there's meaningful content left
+          charDetails += `Writing Style: ${cleanStyle}\n`;
+      }
+  }
+
+  // User details
+  const userDetails = `[User Information]
+Name: ${userSettings.userName}
+${userSettings.userPersona ? `Background: ${userSettings.userPersona}` : ''}`;
+
+  return `
+${systemInstructionText}
+
+${lorebookContext}
+
+---
+${userDetails}
+
+[Character Information]
+${charDetails}
+---
+
+Remember: Respond in the same language as the user's message. Be creative, stay in character, and write engaging content.
+  `.trim();
+};
+
 const PROMPT_TEMPLATES: Record<string, { start: (r: string) => string, end: (r: string) => string, stop: string[] }> = {
     chatml: {
         start: (role) => `<|im_start|>${role}\n`,
@@ -557,7 +637,8 @@ async function* generatePuterStream(
     }
 
     const lorebookContext = getLorebookContext(history, character, settings);
-    const systemContent = buildSystemContext(character, settings, lorebookContext, summary);
+    // CRITICAL: Use Puter-specific clean system context to avoid safety filter rejections
+    const systemContent = buildSystemContextForPuter(character, settings, lorebookContext, summary);
 
     const SAFE_CONTEXT_LIMIT = 8192;
     const maxOutput = Number(settings.maxOutputTokens) || 1024;
@@ -573,8 +654,16 @@ async function* generatePuterStream(
 
     const modelToUse = settings.puterModelInput || settings.modelName || 'gpt-4o';
 
-    console.log('[Puter] Using model:', modelToUse);
-    console.log('[Puter] Sending', messages.length, 'messages');
+    console.log('%c[Puter] Using clean system prompt for content safety', 'color: #10b981; font-weight: bold');
+    console.log('[Puter] Model:', modelToUse);
+    console.log('[Puter] System prompt:', systemContent.length, 'chars');
+    console.log('[Puter] Messages:', messages.length, 'total (', trimmedHistory.length, 'history)');
+    console.log('[Puter] Character:', character.name);
+
+    // Warn if jailbreak is set (it's ignored for Puter)
+    if (settings.jailbreakOverride && settings.jailbreakOverride.trim().length > 0) {
+        console.warn('%c[Puter] NOTE: Jailbreak prompts are automatically disabled for Puter to prevent content filter rejections', 'color: #f59e0b; font-weight: bold');
+    }
 
     try {
         const result = await puter.ai.chat(messages, {
@@ -619,19 +708,44 @@ async function* generatePuterStream(
         if (error.name === 'AbortError' || error.message === "Aborted") throw error;
 
         const errorMessage = error.message || String(error);
+        const errorLower = errorMessage.toLowerCase();
 
-        if (errorMessage.toLowerCase().includes('quota') ||
-            errorMessage.toLowerCase().includes('insufficient') ||
-            errorMessage.toLowerCase().includes('credit') ||
-            errorMessage.toLowerCase().includes('limit exceeded')) {
+        // Quota/Credit errors
+        if (errorLower.includes('quota') ||
+            errorLower.includes('insufficient') ||
+            errorLower.includes('credit') ||
+            errorLower.includes('limit exceeded')) {
             throw new Error('PUTER_QUOTA_EXCEEDED: You have reached your free credit limit on Puter. Please wait or upgrade your account.');
         }
 
-        if (errorMessage.toLowerCase().includes('auth') || errorMessage.toLowerCase().includes('login')) {
+        // Authentication errors
+        if (errorLower.includes('auth') ||
+            errorLower.includes('login') ||
+            errorLower.includes('unauthorized')) {
             throw new Error('PUTER_AUTH_REQUIRED: Please authenticate with Puter to use this provider.');
         }
 
+        // Content policy/safety filter errors
+        if (errorLower.includes('content policy') ||
+            errorLower.includes('safety') ||
+            errorLower.includes('inappropriate') ||
+            errorLower.includes('violated') ||
+            errorLower.includes('refused') ||
+            errorLower.includes('cannot') ||
+            errorLower.includes('unable to process')) {
+            console.error('[Puter] Content filter triggered:', errorMessage);
+            throw new Error('PUTER_CONTENT_FILTER: The request was blocked by content safety filters. Try using simpler character descriptions or a different character.');
+        }
+
+        // Model not found errors
+        if (errorLower.includes('not found') ||
+            errorLower.includes('404') ||
+            errorLower.includes('invalid model')) {
+            throw new Error(`PUTER_MODEL_ERROR: Model "${modelToUse}" not found or not available. Try a different model like "gpt-4o" or "claude-3.5-sonnet".`);
+        }
+
         console.error('Puter AI Error:', error);
+        console.error('[Puter] Full error object:', JSON.stringify(error, null, 2));
         throw new Error(`Puter Error: ${errorMessage}`);
     }
 }

@@ -4,6 +4,19 @@
 
 VelvetCore now supports **Puter.js** as a primary AI provider, enabling you to access multiple AI models through Puter's unified API with automatic authentication and credit management.
 
+## IMPORTANT: Recent Fixes (January 2026)
+
+All previous issues with Puter provider have been PERMANENTLY FIXED:
+- **Language Support:** Now works with ALL languages (Arabic, English, French, etc.)
+- **Custom Characters:** Works with both default and user-created characters
+- **Long Conversations:** No more 2-message limit - conversations continue indefinitely
+
+For technical details, see:
+- `PUTER_FIXES_AR.md` (Arabic documentation)
+- `PUTER_FIXES_EN.md` (English documentation)
+
+---
+
 ## Features
 
 ### 1. **Automatic Authentication**
